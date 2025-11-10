@@ -21,9 +21,7 @@ import pandas as pd
 # LangChain components
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.documents import Document
-
-# OpenAI
-from openai import OpenAI
+from langchain_openai import OpenAIEmbeddings
 
 # Pinecone
 from pinecone import Pinecone, ServerlessSpec
@@ -35,9 +33,6 @@ load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME", "rag-docs")
-
-# Initialize OpenAI client
-openai_client = OpenAI(api_key=OPENAI_API_KEY)
 
 # Text splitter configuration
 CHUNK_SIZE = 1000
@@ -55,7 +50,11 @@ class DocumentProcessor:
             length_function=len,
             separators=["\n\n", "\n", " ", ""]
         )
-        self.embedding_model = "text-embedding-3-small"
+        # Initialize LangChain OpenAI embeddings
+        self.embeddings = OpenAIEmbeddings(
+            model="text-embedding-3-small",
+            openai_api_key=OPENAI_API_KEY
+        )
         
     def extract_text_from_pdf(self, file) -> str:
         """Extract text from PDF file"""
@@ -116,36 +115,29 @@ class DocumentProcessor:
         return chunks
     
     def generate_embeddings(self, texts: List[str]) -> List[List[float]]:
-        """Generate embeddings using OpenAI embedding model"""
-        embeddings = []
-        
-        for i, text in enumerate(texts):
-            try:
-                # Generate embedding using OpenAI
-                response = openai_client.embeddings.create(
-                    model=self.embedding_model,
-                    input=text
+        """Generate embeddings using OpenAI embedding model via LangChain"""
+        try:
+            # Generate embeddings using LangChain's OpenAI wrapper
+            # This handles batching, retries, and rate limiting automatically
+            embeddings = self.embeddings.embed_documents(texts)
+            return embeddings
+        except Exception as e:
+            error_msg = str(e)
+            # Check for specific quota/rate limit error
+            if "429" in error_msg or "quota" in error_msg.lower() or "exceeded" in error_msg.lower() or "rate_limit" in error_msg.lower():
+                raise Exception(
+                    f"❌ OpenAI API Rate Limit/Quota Exceeded!\n\n"
+                    f"You've hit the rate limit for embedding requests.\n\n"
+                    f"Solutions:\n"
+                    f"1. Wait a minute and try again\n"
+                    f"2. Check usage at: https://platform.openai.com/usage\n"
+                    f"3. Upgrade your plan at: https://platform.openai.com/account/billing\n"
+                    f"4. Add more credits to your account\n\n"
+                    f"Total chunks to process: {len(texts)}"
                 )
-                embeddings.append(response.data[0].embedding)
-            except Exception as e:
-                error_msg = str(e)
-                # Check for specific quota/rate limit error
-                if "429" in error_msg or "quota" in error_msg.lower() or "exceeded" in error_msg.lower() or "rate_limit" in error_msg.lower():
-                    raise Exception(
-                        f"❌ OpenAI API Rate Limit/Quota Exceeded!\n\n"
-                        f"You've hit the rate limit for embedding requests.\n\n"
-                        f"Solutions:\n"
-                        f"1. Wait a minute and try again\n"
-                        f"2. Check usage at: https://platform.openai.com/usage\n"
-                        f"3. Upgrade your plan at: https://platform.openai.com/account/billing\n"
-                        f"4. Add more credits to your account\n\n"
-                        f"Processed {i} of {len(texts)} chunks before hitting limit."
-                    )
-                else:
-                    print(f"Error generating embedding for chunk {i}: {error_msg}")
-                    raise Exception(f"Embedding generation failed: {error_msg[:200]}")
-        
-        return embeddings
+            else:
+                print(f"Error generating embeddings: {error_msg}")
+                raise Exception(f"Embedding generation failed: {error_msg[:200]}")
     
     def process_document(self, file, filename: str) -> List[Dict[str, Any]]:
         """

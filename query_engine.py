@@ -11,8 +11,9 @@ import os
 from typing import List, Dict, Any, Tuple
 from dotenv import load_dotenv
 
-# OpenAI
-from openai import OpenAI
+# LangChain OpenAI
+from langchain_openai import OpenAIEmbeddings, ChatOpenAI
+from langchain_core.messages import HumanMessage, SystemMessage
 
 # Pinecone
 from pinecone import Pinecone
@@ -24,9 +25,6 @@ load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME", "rag-docs")
-
-# Initialize OpenAI client
-openai_client = OpenAI(api_key=OPENAI_API_KEY)
 
 # Model configuration
 EMBEDDING_MODEL = "text-embedding-3-small"
@@ -44,8 +42,19 @@ class QueryEngine:
         Args:
             model_name: Name of the OpenAI model to use (gpt-4o-mini, gpt-4o, gpt-3.5-turbo, etc.)
         """
-        self.embedding_model = EMBEDDING_MODEL
         self.model_name = model_name
+        
+        # Initialize LangChain OpenAI components
+        self.embeddings = OpenAIEmbeddings(
+            model=EMBEDDING_MODEL,
+            openai_api_key=OPENAI_API_KEY
+        )
+        self.llm = ChatOpenAI(
+            model=model_name,
+            temperature=0.7,
+            max_tokens=1000,
+            openai_api_key=OPENAI_API_KEY
+        )
         
         # Initialize Pinecone
         self.pc = Pinecone(api_key=PINECONE_API_KEY)
@@ -66,7 +75,7 @@ class QueryEngine:
     
     def generate_query_embedding(self, query: str) -> List[float]:
         """
-        Generate embedding for the query using OpenAI
+        Generate embedding for the query using OpenAI via LangChain
         
         Args:
             query: User's question
@@ -75,11 +84,9 @@ class QueryEngine:
             Query embedding vector
         """
         try:
-            response = openai_client.embeddings.create(
-                model=self.embedding_model,
-                input=query
-            )
-            return response.data[0].embedding
+            # Use LangChain's embed_query method for single query
+            embedding = self.embeddings.embed_query(query)
+            return embedding
         except Exception as e:
             print(f"Error generating query embedding: {str(e)}")
             raise
@@ -161,7 +168,7 @@ Answer:"""
     
     def generate_answer(self, query: str, context_chunks: List[Dict[str, Any]]) -> str:
         """
-        Generate an answer using OpenAI LLM
+        Generate an answer using OpenAI LLM via LangChain
         
         Args:
             query: User's question
@@ -173,18 +180,14 @@ Answer:"""
         # Build prompt
         prompt = self.build_prompt(query, context_chunks)
         
-        # Generate response
+        # Generate response using LangChain's ChatOpenAI
         try:
-            response = openai_client.chat.completions.create(
-                model=self.model_name,
-                messages=[
-                    {"role": "system", "content": "You are a helpful AI assistant that answers questions based on provided document context."},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.7,
-                max_tokens=1000
-            )
-            return response.choices[0].message.content
+            messages = [
+                SystemMessage(content="You are a helpful AI assistant that answers questions based on provided document context."),
+                HumanMessage(content=prompt)
+            ]
+            response = self.llm.invoke(messages)
+            return response.content
         except Exception as e:
             print(f"Error generating answer: {str(e)}")
             return f"Error generating answer: {str(e)}"
